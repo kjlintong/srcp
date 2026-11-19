@@ -3,7 +3,9 @@
 - 日期：2026-11-19
 - 环境：WSL Ubuntu 24.04，Python 3.12.3，git 2.43.0，jsonschema 4.10.3
 - 命令：`PYTHONPATH=src python3 -m unittest discover -s tests -t . -v`
-- 结果：**72 项通过，0 失败，0 错误**（耗时约 5 秒）
+- 结果：**96 项通过，0 失败，0 错误**（耗时约 9 秒）
+  - 协议层：72 项（原报告范围）
+  - 能力层：24 项（新增，见下）
 
 ## 覆盖矩阵
 
@@ -34,6 +36,29 @@
 | CLI 端到端：冲突返回非零退出码 | 通过 |
 | 负向对照：无协议时更新确实静默丢失 | 通过 |
 | version vector 比较与归并 | 通过 |
+
+## 能力层测试（L5，`tests/test_capabilities.py`）
+
+能力层把协议原语包装成 agent 主动使用的能力，全部复用 Coordinator，不重造并发逻辑。Memory / SQLite 两后端各跑一遍：
+
+| 能力 | 场景 | 结果 |
+|---|---|---|
+| 共享记忆 | 20 线程并发追加，0 丢失；tag/query 过滤 | 通过 |
+| 任务认领 | 6 方并发抢同一任务，恰好 1 个 CLAIMED | 通过 |
+| 任务完成 | 仅 owner 可完成；完成后不可再被他人认领 | 通过 |
+| 租约失效 | claim 到 `hold_ms` 后可被他人抢占 | 通过 |
+| 任务板 | 状态汇总正确（claimed/done/result） | 通过 |
+| 安全编辑 | json_set 不同字段并发都保留；json_merge 递增合并 | 通过 |
+| 安全编辑 | append 双写保留；非法 op 被拒 | 通过 |
+| 审计 | 能力层全部操作后 hash chain 仍有效 | 通过 |
+
+双 agent 端到端 demo（`examples/capability_collab.py`）实证：两个 agent 并发工作，认领无重复、共享文件不同字段编辑无丢失、记忆沉淀 3 条、审计链有效。
+
+### 设计修正记录
+
+开发能力层时发现的职责边界问题与修正，已固化为测试：
+- 初版 `file_edit` 依赖 Coordinator 的 `merge` 策略做二次合并，与能力层自身的语义变换重复，导致 `json_merge` 第二次写被误判为语义冲突。修正为资源统一声明 `abort`（纯 CAS），能力层负责完整内容计算 + 冲突重试。
+- 初版 `memory_commit` 在并发下旧 token 被 fence 拒绝即丢弃（20 线程丢 2 条）。修正为每次重试重新租约+重读，与 `file_edit` 一致。
 
 ## 基准结果
 

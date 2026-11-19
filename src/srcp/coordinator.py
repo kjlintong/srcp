@@ -192,6 +192,12 @@ class Coordinator:
 
     # ------------------------------------------------------------------ interface
 
+    def list_resources(self) -> list[str]:
+        """List declared resource ids (read-only; used by the capability layer to
+        declare shared resources idempotently)."""
+        with self.backend.transaction() as st:
+            return sorted(st.resources.keys())
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "protocol": "srcp/0.1",

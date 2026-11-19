@@ -14,13 +14,26 @@
 ## 架构
 
 ```
-L4 传输绑定   MCP stdio tools / CLI / A2A artifact 元数据
+L5 能力层     memory/claim/file_edit —— agent 主动想用的能力（自愿采用的驱动力）
+L4 传输绑定   协议 MCP (mcp_server) / 能力 MCP (service_server) / CLI / A2A
 L3 协议契约   SPEC.md + 8 个 JSON Schema + 错误码
 L2 协调控制   ACL · 租约+fencing · CAS+版本向量 · 冲突策略 · 审计链 · 幂等
 L1 后端适配   Memory / SQLite(WAL) / Git(flock + atomic rename + commit)
 ```
 
 L2 是唯一理解并发语义的组件；L1 的三个后端只是 `load → 修改 → save` 的原子容器。这让"跨后端语义一致"成为可测试的断言，而不是设计声明。
+
+**为什么要 L5**：协议原语（lease/read/write）是"合规负担"——agent 每次写都要正确编排三个调用。L5 把它们包装成**单调用能力**，让"做正确的事"成为"最省事的事"：
+
+| 能力 | 工具 | 解决 agent 的真实痛点 |
+|---|---|---|
+| 共享记忆 | `memory_commit` / `memory_recall` | 开工前查到别人踩过的坑，不重复调查 |
+| 任务认领 | `plan_claim` / `plan_complete` / `plan_status` | 原子认领，杜绝两人做同一个任务 |
+| 安全编辑 | `file_edit` / `file_read` | 一次调用完成 lease+读+条件写+重试；不同字段并发编辑都保留 |
+
+L5 全部复用 L2 的 Coordinator，**不重造任何锁或版本逻辑**：memory 用 append 策略天然无冲突，claim 用 CAS+fencing 保证唯一赢家，file_edit 内部执行"重读→变换→CAS→冲突重试"。职责划分：Coordinator 只做 CAS + 冲突检测，能力层做语义变换 + 重试。
+
+`AGENTS.md` 是跨 runtime 的工作流指令（Claude Code / Hermes / Codex 都能读），配套的 WorkBuddy skill 在 `~/.workbuddy/skills/srcp-shared-workspace/`。这是"自愿遵守协议"的 adoption 层——用这些能力对 agent 自己有好处，而非被强制。
 
 ## 快速开始
 
@@ -38,8 +51,11 @@ python3 -m srcp.cli --db /tmp/srcp.sqlite3 declare --resource-id shared/plan.md
 python3 -m srcp.cli --db /tmp/srcp.sqlite3 lease --resource-id shared/plan.md --principal agent:alice@a
 python3 -m srcp.cli --db /tmp/srcp.sqlite3 read --resource-id shared/plan.md --principal agent:alice@a
 
-# 挂载为 MCP server（stdio）
+# 挂载协议 MCP server（stdio，暴露 10 个协议原语）
 python3 -m srcp.mcp_server --db /tmp/srcp.sqlite3
+
+# 挂载能力 MCP server（stdio，暴露 7 个 agent 友好能力）——推荐给真实 agent 用
+python3 -m srcp.service_server --db /tmp/srcp.sqlite3
 ```
 
 MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）：
@@ -77,7 +93,7 @@ MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）�
 
 ## 一致性测试
 
-`tests/conformance.py` 定义了 21 个后端无关场景，`tests/test_backends.py` 让 Memory / SQLite / Git 各跑一遍；`tests/test_protocol.py` 补充 Schema 校验、跨后端 parity、跨进程 CAS、MCP/CLI 端到端与负向对照。
+`tests/conformance.py` 定义了 21 个后端无关场景，`tests/test_backends.py` 让 Memory / SQLite / Git 各跑一遍；`tests/test_protocol.py` 补充 Schema 校验、跨后端 parity、跨进程 CAS、MCP/CLI 端到端与负向对照；`tests/test_capabilities.py` 覆盖能力层（记忆并发追加无丢失、claim 单赢家、owner 校验、claim 过期抢占、字段级并发编辑、审计链）。
 
 关键场景：丢失更新、僵尸写者（fence token 失效）、租约过期、心跳续约、幂等重试、append 双写保留、字段级 merge、语义冲突升级与 owner 裁决、LWW 强制留痕、manual 排队、越权写、路径穿越、审计篡改、拒绝写留痕、陈旧读风险提示。
 
@@ -89,7 +105,8 @@ MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）�
 PYTHONPATH=src python3 examples/naive_lost_update.py    # 无协议基线：一次更新静默丢失
 PYTHONPATH=src python3 examples/protected_write.py      # SRCP：冲突显式化 + 重读重试
 PYTHONPATH=src python3 examples/stale_writer.py         # 暂停后苏醒的旧写者被 fence 拒绝
-PYTHONPATH=src python3 examples/multi_agent_plan.py     # hermes / claude-code / codex 共享计划
+PYTHONPATH=src python3 examples/multi_agent_plan.py     # 三 runtime 直接用协议原语共享计划
+PYTHONPATH=src python3 examples/capability_collab.py    # 双 agent 用能力层协作（推荐）
 PYTHONPATH=src python3 examples/benchmark.py --rounds 100
 ```
 
@@ -100,6 +117,8 @@ PYTHONPATH=src python3 examples/benchmark.py --rounds 100
 - `merge` 仅处理 JSON 对象的字段级合并；同字段冲突必须人工裁决，协议不替业务判定真值。
 - 控制面状态以单个 JSON blob 存储，换取实现薄与语义一致；高吞吐生产场景应映射到分表后端。
 - 不承诺跨 Agent read-your-writes，也不承诺全局顺序。
+- 能力层的 memory 是 append-only 的事实日志，不做去重/摘要；大规模后应外接检索索引。
+- `file_edit` 的 `replace` 遇到并发写入会**表面冲突而不静默覆盖**；`json_set`/`json_merge` 在不同字段上可无冲突并发。
 
 ## 路线图
 
