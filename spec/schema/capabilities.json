@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/capabilities.json",
+  "title": "SRCP Capability Negotiation Result",
+  "type": "object",
+  "required": ["protocol", "level", "isolation", "policies", "backends"],
+  "additionalProperties": false,
+  "properties": {
+    "protocol": { "const": "srcp/0.1" },
+    "level": { "enum": ["L0", "L1", "L2"] },
+    "isolation": { "type": "array", "items": { "enum": ["serializable", "causal", "eventual"] } },
+    "policies": {
+      "type": "array",
+      "items": { "enum": ["abort", "append", "merge", "lww", "manual"] }
+    },
+    "backends": { "type": "array", "items": { "type": "string" } },
+    "max_lease_ttl_ms": { "type": "integer", "minimum": 1 },
+    "deprecated": { "type": "array", "items": { "type": "string" }, "default": [] }
+  }
+}

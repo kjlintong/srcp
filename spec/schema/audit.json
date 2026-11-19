@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/audit.json",
+  "title": "SRCP Audit Event (hash-chained)",
+  "type": "object",
+  "required": ["seq", "trace_id", "ts", "actor", "action", "resource_id", "outcome", "evidence", "prev_hash", "hash"],
+  "additionalProperties": false,
+  "properties": {
+    "seq": { "type": "integer", "minimum": 1 },
+    "trace_id": { "type": "string" },
+    "ts": { "type": "string", "format": "date-time" },
+    "actor": { "type": "string" },
+    "action": { "enum": ["declare", "acquire", "heartbeat", "release", "read", "write", "conflict", "adjudicate", "reject"] },
+    "resource_id": { "type": "string" },
+    "outcome": { "enum": ["ok", "denied"] },
+    "evidence": { "type": "object" },
+    "prev_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

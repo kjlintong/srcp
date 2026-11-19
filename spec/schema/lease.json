@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/lease.json",
+  "title": "SRCP Lease",
+  "type": "object",
+  "required": ["lease_id", "resource_id", "principal", "token", "expires_at"],
+  "additionalProperties": false,
+  "properties": {
+    "lease_id": { "type": "string", "minLength": 1 },
+    "resource_id": { "type": "string", "minLength": 1 },
+    "principal": { "type": "string", "minLength": 1 },
+    "token": { "type": "integer", "minimum": 1, "description": "Monotonic fencing token. Never reused." },
+    "ttl_ms": { "type": "integer", "minimum": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "state": { "enum": ["active", "expired", "released"] }
+  }
+}

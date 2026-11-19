@@ -1,0 +1,60 @@
+# SRCP v0.1 一致性测试报告
+
+- 日期：2026-11-19
+- 环境：WSL Ubuntu 24.04，Python 3.12.3，git 2.43.0，jsonschema 4.10.3
+- 命令：`PYTHONPATH=src python3 -m unittest discover -s tests -t . -v`
+- 结果：**72 项通过，0 失败，0 错误**（耗时约 5 秒）
+
+## 覆盖矩阵
+
+| 类别 | 场景 | Memory | SQLite | Git |
+|---|---|---:|---:|---:|
+| 基础 | 提交、版本化读、幂等声明 | 通过 | 通过 | 通过 |
+| 丢失更新 | 两写者同版本，后者被拒 | 通过 | 通过 | 通过 |
+| fencing | 旧 token 苏醒后被资源侧拒绝 | 通过 | 通过 | 通过 |
+| 租约 | TTL 过期拒绝、心跳续约 | 通过 | 通过 | 通过 |
+| 幂等 | 重复请求不重复提交 | 通过 | 通过 | 通过 |
+| append | 双方写入都保留 | 通过 | 通过 | 通过 |
+| merge | 不相交字段合并、同字段语义冲突升级 | 通过 | 通过 | 通过 |
+| lww | 接受但强制记录冲突与审计 | 通过 | 通过 | 通过 |
+| manual | 排队 + owner 裁决 | 通过 | 通过 | 通过 |
+| 安全 | 越权写、路径穿越、策略覆盖限 owner | 通过 | 通过 | 通过 |
+| 审计 | hash chain 篡改检出、拒绝写留痕 | 通过 | 通过 | 通过 |
+| 可见性 | stale read 风险提示、lease 归属校验 | 通过 | 通过 | 通过 |
+
+## 协议级测试
+
+| 测试 | 结果 |
+|---|---|
+| 线上对象符合 8 个 JSON Schema | 通过 |
+| 三后端同场景输出逐项一致（parity） | 通过 |
+| SQLite 跨进程 CAS：两个真实进程并发，仅一个提交 | 通过 |
+| Git 后端每次状态变更产生 commit | 通过 |
+| MCP stdio 端到端：initialize / tools/list / declare / lease / write | 通过 |
+| CLI 端到端：冲突返回非零退出码 | 通过 |
+| 负向对照：无协议时更新确实静默丢失 | 通过 |
+| version vector 比较与归并 | 通过 |
+
+## 基准结果
+
+见 `results/benchmark.json`，100 轮双写者竞争：
+
+| 指标 | 无协议基线 | SRCP |
+|---|---:|---:|
+| 静默丢失更新 | 100 | 0 |
+| 显式检测到的冲突 | 0 | 2（CAS 层） |
+| 旧写者被 fence 拒绝 | 不适用 | 98 |
+| 需要重读重试的次数 | 不适用 | 100 |
+| 双方更新最终都保留的轮次 | 0 | 100 |
+| 审计链有效的轮次 | 不适用 | 100 |
+
+**关键发现**：高并发下 98% 的异常在 fencing 门禁就被拦下（`FENCE_REJECTED`），只有 2% 走到 CAS 冲突（`CONFLICT`）。这验证了"独立 token 计数器 + 资源侧高水位"的必要性——如果 token 从高水位生成，两个并发租约会拿到相同 token，这道防线会直接失效。客户端应统一处理所有非 `COMMITTED` 结果：重新获取租约、重读、重试。
+
+## 复现
+
+```bash
+cd ~/project/srcp
+export PYTHONPATH=$PWD/src
+python3 -m unittest discover -s tests -t . -v
+python3 examples/benchmark.py --rounds 100
+```

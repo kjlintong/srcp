@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-11-19T11:38:35.410387+00:00",
+  "rounds": 100,
+  "baseline": {
+    "silent_lost_updates": 100,
+    "rate": 0.5,
+    "note": "two uncoordinated read-modify-write agents; losses are silent"
+  },
+  "srcp": {
+    "silent_lost_updates": 0,
+    "detected_conflicts": 2,
+    "retries": 100,
+    "rounds_with_both_updates": 100,
+    "rounds_with_valid_audit": 100,
+    "stale_writer_rejections": 98,
+    "sample_statuses": [
+      "COMMITTED",
+      "COMMITTED"
+    ],
+    "sample_first_errors": [
+      null,
+      "FENCE_REJECTED"
+    ],
+    "note": "conflicts become explicit objects; retry after re-read preserves both updates"
+  }
+}

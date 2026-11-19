@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/read-view.json",
+  "title": "SRCP Read View",
+  "type": "object",
+  "required": ["resource_id", "generation", "version_vector", "content_hash", "content", "content_type", "read_at", "stale_risk"],
+  "additionalProperties": false,
+  "properties": {
+    "resource_id": { "type": "string" },
+    "generation": { "type": "integer", "minimum": 0 },
+    "version_vector": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "content_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "content": { "type": "string" },
+    "content_type": { "type": "string" },
+    "read_at": { "type": "string", "format": "date-time" },
+    "stale_risk": { "enum": ["none", "concurrent-writes-may-exist"] },
+    "active_lease": { "type": ["object", "null"] }
+  }
+}

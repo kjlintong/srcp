@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/resource.json",
+  "title": "SRCP Resource Declaration",
+  "type": "object",
+  "required": ["resource_id", "content_type", "granularity", "isolation", "conflict_policy"],
+  "additionalProperties": false,
+  "properties": {
+    "resource_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_.:@/+-]+$",
+      "description": "URI-like identifier. Must not start with '/' or contain '..' (checked by implementation)."
+    },
+    "tenant": { "type": "string", "default": "default" },
+    "content_type": { "type": "string", "minLength": 1 },
+    "granularity": { "enum": ["file", "kv", "row-range", "graph-claim"] },
+    "isolation": { "enum": ["serializable", "causal", "eventual"] },
+    "owners": { "type": "array", "items": { "$ref": "#/$defs/principal" }, "default": [] },
+    "writers": { "type": "array", "items": { "$ref": "#/$defs/principal" }, "default": [] },
+    "readers": { "type": "array", "items": { "$ref": "#/$defs/principal" }, "default": [] },
+    "conflict_policy": { "enum": ["abort", "append", "merge", "lww", "manual"], "default": "abort" },
+    "retention": { "enum": ["append-only", "snapshot", "compact"], "default": "snapshot" }
+  },
+  "$defs": {
+    "principal": {
+      "anyOf": [
+        { "const": "*" },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9_.:@*+-]+(@[A-Za-z0-9_.:*-]+)?$"
+        }
+      ],
+      "description": "scheme:id@scope, e.g. agent:claude-code@sess-7. '*' or scheme:* are ACL wildcards."
+    }
+  }
+}

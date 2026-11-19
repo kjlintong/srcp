@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://srcp.dev/schema/0.1/conflict.json",
+  "title": "SRCP Conflict Object",
+  "type": "object",
+  "required": ["conflict_id", "resource_id", "class", "detected_at", "resolution"],
+  "additionalProperties": false,
+  "properties": {
+    "conflict_id": { "type": "string" },
+    "resource_id": { "type": "string" },
+    "class": {
+      "enum": ["no-conflict", "stale-write", "mergeable", "semantic-conflict", "authority-conflict", "schema-conflict"]
+    },
+    "detected_at": { "type": "string", "format": "date-time" },
+    "base_generation": { "type": "integer", "minimum": 0 },
+    "parties": { "type": "array", "items": { "type": "string" } },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "principal": { "type": "string" },
+          "content_hash": { "type": "string" },
+          "intent": { "type": "string" }
+        }
+      }
+    },
+    "resolution": { "enum": ["unresolved", "aborted", "lww", "merged", "manual"] },
+    "detail": { "type": "string", "default": "" },
+    "trace_ids": { "type": "array", "items": { "type": "string" } }
+  }
+}
