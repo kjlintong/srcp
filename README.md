@@ -1,6 +1,10 @@
 # SRCP — Shared Resource Coordination Protocol
 
+[![conformance](https://github.com/kjlintong/srcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kjlintong/srcp/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/kjlintong/srcp)](https://github.com/kjlintong/srcp/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 > 让异构 Agent 对同一资源的并发操作产生**一致、可验证、可审计**的结果——不发明新数据库，也不替代 MCP / A2A。
+
+仓库：https://github.com/kjlintong/srcp · 最新版本：[v0.1.0](https://github.com/kjlintong/srcp/releases/tag/v0.1.0)
 
 本协议与参考实现源自调研《多 Agent 共享文件与记忆库并发冲突防护调研》的结论：工程原语（锁、事务、MVCC、CRDT）已经成熟，缺口在于**跨 Agent 的共享资源契约**——谁先读、谁先写、版本如何比较、冲突如何消解、失败如何回滚。
 
@@ -48,6 +52,12 @@ L5 全部复用 L2 的 Coordinator，**不重造任何锁或版本逻辑**：mem
 环境：Linux / WSL Ubuntu，Python ≥ 3.11，依赖仅 `jsonschema`。
 
 ```bash
+# 安装（当前通过 GitHub 分发，尚未上 PyPI）
+python3 -m venv .venv && source .venv/bin/activate
+pip install "git+https://github.com/kjlintong/srcp.git@v0.1.0"
+# 之后可直接用 `srcp` CLI，或以 python -m srcp.service_server 挂载 MCP
+
+# 源码开发模式
 cd ~/project/srcp
 export PYTHONPATH=$PWD/src
 
