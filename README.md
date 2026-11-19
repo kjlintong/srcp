@@ -14,6 +14,7 @@
 ## 架构
 
 ```
+L6 磁盘权威   FileAuthority —— 绑定资源到真实文件，磁盘为内容权威，检测并采纳 out-of-band 写
 L5 能力层     memory/claim/file_edit —— agent 主动想用的能力（自愿采用的驱动力）
 L4 传输绑定   协议 MCP (mcp_server) / 能力 MCP (service_server) / CLI / A2A
 L3 协议契约   SPEC.md + 8 个 JSON Schema + 错误码
@@ -35,6 +36,13 @@ L5 全部复用 L2 的 Coordinator，**不重造任何锁或版本逻辑**：mem
 
 `AGENTS.md` 是跨 runtime 的工作流指令（Claude Code / Hermes / Codex 都能读），配套的 WorkBuddy skill 在 `~/.workbuddy/skills/srcp-shared-workspace/`。这是"自愿遵守协议"的 adoption 层——用这些能力对 agent 自己有好处，而非被强制。
 
+**L6 消除影子副本**：默认情况下 SRCP 的 content 存在自己的 store 里，与 agent 用原生工具编辑的真实文件是两份副本，会永久漂移。启用 `--root` 后可把资源 `file_bind` 到工作区真实文件：
+
+- 绑定时文件的当前字节成为 generation 0 的初始内容（不丢已有内容）。
+- 之后每次 `file_edit` 在同一事务内**原子落盘**（tmp + fsync + os.replace），元数据与文件不可能分歧；`file_read` 内容直接来自磁盘并校验哈希。
+- 若有人绕过协议直接用文件工具改盘，读写都会返回 `AUTHORITY_CONFLICT`，**绝不静默覆盖**；owner 用 `file_adopt` 把该改动作为新 generation 纳入审计后恢复同步。
+- 路径经 realpath + commonpath 校验，`../` 穿越和符号链接逃逸被拒绝。
+
 ## 快速开始
 
 环境：Linux / WSL Ubuntu，Python ≥ 3.11，依赖仅 `jsonschema`。
@@ -54,8 +62,11 @@ python3 -m srcp.cli --db /tmp/srcp.sqlite3 read --resource-id shared/plan.md --p
 # 挂载协议 MCP server（stdio，暴露 10 个协议原语）
 python3 -m srcp.mcp_server --db /tmp/srcp.sqlite3
 
-# 挂载能力 MCP server（stdio，暴露 7 个 agent 友好能力）——推荐给真实 agent 用
+# 挂载能力 MCP server（stdio，暴露 agent 友好能力）——推荐给真实 agent 用
 python3 -m srcp.service_server --db /tmp/srcp.sqlite3
+
+# 带磁盘权威：把资源绑定到真实文件，消除影子副本
+python3 -m srcp.service_server --db /tmp/srcp.sqlite3 --root /path/to/workspace
 ```
 
 MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）：
@@ -68,7 +79,8 @@ MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）�
       "args": ["-m", "srcp.mcp_server"],
       "env": {
         "PYTHONPATH": "/home/ryan/project/srcp/src",
-        "SRCP_DB": "/home/ryan/project/srcp/results/state.sqlite3"
+        "SRCP_DB": "/home/ryan/project/srcp/results/state.sqlite3",
+        "SRCP_ROOT": "/home/ryan/project/srcp"
       }
     }
   }
@@ -93,7 +105,7 @@ MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）�
 
 ## 一致性测试
 
-`tests/conformance.py` 定义了 21 个后端无关场景，`tests/test_backends.py` 让 Memory / SQLite / Git 各跑一遍；`tests/test_protocol.py` 补充 Schema 校验、跨后端 parity、跨进程 CAS、MCP/CLI 端到端与负向对照；`tests/test_capabilities.py` 覆盖能力层（记忆并发追加无丢失、claim 单赢家、owner 校验、claim 过期抢占、字段级并发编辑、审计链）。
+`tests/conformance.py` 定义了 21 个后端无关场景，`tests/test_backends.py` 让 Memory / SQLite / Git 各跑一遍；`tests/test_protocol.py` 补充 Schema 校验、跨后端 parity、跨进程 CAS、MCP/CLI 端到端与负向对照；`tests/test_capabilities.py` 覆盖能力层（记忆并发追加无丢失、claim 单赢家、owner 校验、claim 过期抢占、字段级并发编辑、审计链）；`tests/test_file_authority.py` 覆盖磁盘权威（绑定种子、原子落盘、out-of-band 检测、adopt、哈希栅栏、路径穿越、能力层集成）。
 
 关键场景：丢失更新、僵尸写者（fence token 失效）、租约过期、心跳续约、幂等重试、append 双写保留、字段级 merge、语义冲突升级与 owner 裁决、LWW 强制留痕、manual 排队、越权写、路径穿越、审计篡改、拒绝写留痕、陈旧读风险提示。
 
@@ -107,6 +119,7 @@ PYTHONPATH=src python3 examples/protected_write.py      # SRCP：冲突显式化
 PYTHONPATH=src python3 examples/stale_writer.py         # 暂停后苏醒的旧写者被 fence 拒绝
 PYTHONPATH=src python3 examples/multi_agent_plan.py     # 三 runtime 直接用协议原语共享计划
 PYTHONPATH=src python3 examples/capability_collab.py    # 双 agent 用能力层协作（推荐）
+PYTHONPATH=src python3 examples/disk_authority.py       # 消除影子副本：绑定→落盘→检测→adopt
 PYTHONPATH=src python3 examples/benchmark.py --rounds 100
 ```
 
@@ -119,6 +132,8 @@ PYTHONPATH=src python3 examples/benchmark.py --rounds 100
 - 不承诺跨 Agent read-your-writes，也不承诺全局顺序。
 - 能力层的 memory 是 append-only 的事实日志，不做去重/摘要；大规模后应外接检索索引。
 - `file_edit` 的 `replace` 遇到并发写入会**表面冲突而不静默覆盖**；`json_set`/`json_merge` 在不同字段上可无冲突并发。
+- 磁盘权威需要显式 `file_bind`；未绑定的资源仍用 SRCP 内部存储。adopt 是 owner 权限，避免 writer 借采纳绕过冲突规则。
+- 原子落盘依赖同目录 `os.replace`；跨文件系统的路径不受支持（绑定路径始终在 `--root` 内）。
 
 ## 路线图
 

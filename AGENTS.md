@@ -59,11 +59,21 @@ Configure the server (any MCP-capable runtime — Claude Code, Hermes, Codex):
    with its version. If `stale_risk` is set, another agent holds a write lease;
    re-read before acting on the content.
 
+6b. **Real files (no shadow copy)**: if the server runs with `--root`, bind a real
+   file once with **`file_bind(resource_id, path, principal)`**. Then `file_edit`
+   writes to that actual file atomically and `file_read` returns its real bytes.
+   If you (or a human) edited the file directly with normal tools, the next read/edit
+   returns `AUTHORITY_CONFLICT` — your direct change is preserved, never overwritten.
+   Resolve it by having an owner call **`file_adopt(resource_id, principal)`**, which
+   records the external change in the audit trail; then normal edits resume.
+
 ## What NOT to do
 
-- Do not edit a shared resource by writing the file directly on disk while a peer
-  is working — the shared copy in SRCP is authoritative; a direct write is
-  invisible to the team and will be treated as an out-of-band change.
+- For bound files, editing directly on disk is *detected* (you get
+  `AUTHORITY_CONFLICT` and must ask an owner to adopt). Prefer `file_edit` so your
+  change is versioned and visible to the team without an adopt step.
+- For unbound resources, do not write the backing file directly — SRCP's copy is
+  authoritative and a direct write is invisible to the team.
 - Do not skip `plan_claim`. Claiming is cheap; duplicate work is expensive.
 - Do not leave a task claimed-but-never-completed if you abandon it — call
   `plan_complete` with a note, or let the claim expire (`hold_ms`).

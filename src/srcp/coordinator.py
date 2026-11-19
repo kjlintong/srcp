@@ -8,11 +8,12 @@ the conformance suite verifies.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .audit import audit_append, audit_verify
 from .backends.base import Backend
@@ -40,11 +41,21 @@ class Coordinator:
     POLICIES = ("abort", "append", "merge", "lww", "manual")
     ISOLATIONS = ("serializable", "causal", "eventual")
 
-    def __init__(self, backend: Backend, level: str = "L2") -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        level: str = "L2",
+        commit_hook: Callable[[Any, str, str, str], None] | None = None,
+    ) -> None:
         if level not in ("L0", "L1", "L2"):
             raise InvalidRequest(f"unknown compliance level: {level}")
         self.backend = backend
         self.level = level
+        # Called INSIDE the state transaction, after a successful commit has been
+        # applied to `st` but before it is persisted. Used by FileAuthority to write
+        # the bound disk file atomically with the protocol metadata. Signature:
+        #   hook(state, resource_id, new_content, trace_id)
+        self.commit_hook = commit_hook
 
     # ------------------------------------------------------------------ helpers
 
@@ -197,6 +208,135 @@ class Coordinator:
         declare shared resources idempotently)."""
         with self.backend.transaction() as st:
             return sorted(st.resources.keys())
+
+    # ------------------------------------------------------- disk binding (L5.5)
+
+    def bind_resource(
+        self,
+        resource_id: str,
+        rel_path: str,
+        content: str,
+        declaration: dict[str, Any] | None = None,
+    ) -> None:
+        """Bind a resource to a disk file, seeding protocol content from that file.
+
+        Idempotent: rebinding the same resource to the same path is a no-op.
+        Rebinding to a different path is rejected. This only records metadata;
+        the caller (FileAuthority) owns the actual file on disk.
+        """
+        self._validate_resource_id(resource_id)
+        trace_id = self._trace()
+        with self.backend.transaction() as st:
+            existing = st.bindings.get(resource_id)
+            if existing is not None:
+                if existing != rel_path:
+                    raise SRPCError(
+                        f"resource {resource_id} already bound to {existing}",
+                        code="BINDING_CONFLICT",
+                    )
+                return
+            if resource_id not in st.resources:
+                decl = declaration or {"resource_id": resource_id}
+                decl.setdefault("content_type", "text/plain")
+                # Bind to the file on disk: initial content becomes generation 0.
+                declared = ResourceDecl.from_dict(decl)
+                st.resources[resource_id] = {
+                    "decl": declared.to_dict(),
+                    "generation": 0,
+                    "version_vector": {},
+                    "content": content,
+                    "content_hash": sha256_text(content),
+                    "updated_at": self._now(),
+                }
+                st.fence[resource_id] = 0
+                st.tokens[resource_id] = 0
+            else:
+                # Resource already declared (e.g. via capability layer); adopt the
+                # disk's current content as the baseline for this binding.
+                record = st.resources[resource_id]
+                record["content"] = content
+                record["content_hash"] = sha256_text(content)
+            st.bindings[resource_id] = rel_path
+            audit_append(
+                st.audit,
+                trace_id=trace_id,
+                ts=self._now(),
+                actor="system",
+                action="bind",
+                resource_id=resource_id,
+                outcome="ok",
+                evidence={"rel_path": rel_path, "content_hash": sha256_text(content)},
+            )
+
+    def get_binding(self, resource_id: str) -> str | None:
+        with self.backend.transaction() as st:
+            return st.bindings.get(resource_id)
+
+    def bound_content_hash(self, resource_id: str) -> str:
+        """Return the hash SRCP last recorded for a resource (disk authority check)."""
+        with self.backend.transaction() as st:
+            record = st.resources.get(resource_id)
+            if record is None:
+                raise SRPCError(f"resource not found: {resource_id}", code="RESOURCE_NOT_FOUND")
+            return str(record["content_hash"])
+
+    def content_type_of(self, resource_id: str) -> str:
+        with self.backend.transaction() as st:
+            record = st.resources.get(resource_id)
+            if record is None:
+                raise SRPCError(f"resource not found: {resource_id}", code="RESOURCE_NOT_FOUND")
+            return str(record["decl"].get("content_type", "text/plain"))
+
+    def adopt_external(
+        self, resource_id: str, principal: str, content: str, *, note: str = ""
+    ) -> dict[str, Any]:
+        """Adopt an out-of-band disk change into the protocol as a new generation.
+
+        Owner-only: acknowledging an external write is an authority act. The disk
+        file is already changed; this brings the metadata back in sync and records
+        who sanctioned it, so the audit trail never hides the divergence.
+        """
+        self._validate_principal(principal)
+        trace_id = self._trace()
+        with self.backend.transaction() as st:
+            record = st.resources.get(resource_id)
+            if record is None:
+                raise SRPCError(f"resource not found: {resource_id}", code="RESOURCE_NOT_FOUND")
+            if not self._permitted(record["decl"], principal, "owner"):
+                raise PermissionDenied("only owners may adopt external writes")
+            current_generation = int(record["generation"])
+            new_vector = vv_bump(dict(record["version_vector"]), principal)
+            new_hash = sha256_text(content)
+            record.update(
+                content=content,
+                content_hash=new_hash,
+                generation=current_generation + 1,
+                version_vector=new_vector,
+                updated_at=self._now(),
+            )
+            st.resources[resource_id] = record
+            audit_append(
+                st.audit,
+                trace_id=trace_id,
+                ts=self._now(),
+                actor=principal,
+                action="adopt",
+                resource_id=resource_id,
+                outcome="ok",
+                evidence={
+                    "from_generation": current_generation,
+                    "content_hash": new_hash,
+                    "note": note,
+                },
+            )
+            return {
+                "ok": True,
+                "status": "ADOPTED",
+                "resource_id": resource_id,
+                "generation": current_generation + 1,
+                "content_hash": new_hash,
+                "trace_id": trace_id,
+            }
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -627,6 +767,10 @@ class Coordinator:
             )
             st.resources[req.resource_id] = record
             st.fence[req.resource_id] = max(high_water, int(lease.token))
+            # Persist any authoritative side effect (e.g. the bound disk file)
+            # inside the same transaction, so metadata and file cannot diverge.
+            if self.commit_hook is not None:
+                self.commit_hook(st, req.resource_id, new_content, trace_id)
             result = self._finish_write(
                 st, req, trace_id, status="COMMITTED", generation=new_generation,
                 version_vector=new_vector, content_hash=new_hash,
@@ -692,6 +836,9 @@ class Coordinator:
                 version_vector=new_vector,
                 updated_at=self._now(),
             )
+            st.resources[resource_id] = record
+            if self.commit_hook is not None:
+                self.commit_hook(st, resource_id, content, trace_id)
             conflict["resolution"] = "merged"
             audit_append(
                 st.audit, trace_id=trace_id, ts=self._now(), actor=principal,

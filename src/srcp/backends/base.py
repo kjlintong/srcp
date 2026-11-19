@@ -22,6 +22,9 @@ class State:
     conflicts: list[dict[str, Any]] = field(default_factory=list)
     audit: list[dict[str, Any]] = field(default_factory=list)
     idem: dict[str, Any] = field(default_factory=dict)
+    # resource_id -> relative file path for disk-backed resources. The disk file
+    # is the content authority; SRCP stores metadata + the last-known content hash.
+    bindings: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +35,7 @@ class State:
             "conflicts": self.conflicts,
             "audit": self.audit,
             "idem": self.idem,
+            "bindings": self.bindings,
         }
 
     @classmethod
@@ -45,6 +49,7 @@ class State:
             conflicts=data.get("conflicts") or [],
             audit=data.get("audit") or [],
             idem=data.get("idem") or {},
+            bindings=data.get("bindings") or {},
         )
 
 

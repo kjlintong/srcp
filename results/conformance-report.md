@@ -3,9 +3,10 @@
 - 日期：2026-11-19
 - 环境：WSL Ubuntu 24.04，Python 3.12.3，git 2.43.0，jsonschema 4.10.3
 - 命令：`PYTHONPATH=src python3 -m unittest discover -s tests -t . -v`
-- 结果：**96 项通过，0 失败，0 错误**（耗时约 9 秒）
+- 结果：**122 项通过，0 失败，0 错误**（耗时约 12 秒）
   - 协议层：72 项（原报告范围）
-  - 能力层：24 项（新增，见下）
+  - 能力层：24 项
+  - 磁盘权威：26 项（新增，见下）
 
 ## 覆盖矩阵
 
@@ -59,6 +60,32 @@
 开发能力层时发现的职责边界问题与修正，已固化为测试：
 - 初版 `file_edit` 依赖 Coordinator 的 `merge` 策略做二次合并，与能力层自身的语义变换重复，导致 `json_merge` 第二次写被误判为语义冲突。修正为资源统一声明 `abort`（纯 CAS），能力层负责完整内容计算 + 冲突重试。
 - 初版 `memory_commit` 在并发下旧 token 被 fence 拒绝即丢弃（20 线程丢 2 条）。修正为每次重试重新租约+重读，与 `file_edit` 一致。
+
+## 磁盘权威测试（L6，`tests/test_file_authority.py`）
+
+消除影子副本：磁盘真实文件是内容权威，SRCP 只存元数据 + 内容哈希。Memory / SQLite 两后端各跑一遍：
+
+| 场景 | 结果 |
+|---|---|
+| 绑定时以已有文件字节作为 generation 0 | 通过 |
+| 协议写在同一事务内原子落盘，元数据哈希与文件一致 | 通过 |
+| 绕过协议的直接写盘在 read 时被检出为 AUTHORITY_CONFLICT | 通过 |
+| 直接写盘后协议写被阻断，文件内容不被覆盖 | 通过 |
+| read→write 之间发生直接写盘，哈希栅栏拒绝该写 | 通过 |
+| owner 可 adopt 外部改动并恢复同步；非 owner 被拒 | 通过 |
+| 陈旧 generation 的写被 CAS 拒绝，磁盘内容不变 | 通过 |
+| 路径穿越（`../`、绝对路径、符号链接逃逸）被拒绝；归一化的安全路径允许 | 通过 |
+| 重复绑定到不同路径被拒；未绑定资源写被拒 | 通过 |
+| 能力层 file_edit/file_read 自动走磁盘权威路径 | 通过 |
+| 全部操作后审计链仍有效 | 通过 |
+
+端到端 demo（`examples/disk_authority.py`）实证完整生命周期：绑定→协议编辑落盘→直接改盘被检测且保留→owner adopt 后恢复同步，审计链有效。
+
+### 设计要点
+
+- 落盘用同目录临时文件 + fsync + `os.replace`，通过 `Coordinator.commit_hook` 在**状态事务锁内**执行，元数据与文件无法分歧。
+- out-of-band 检测基于内容哈希比对（磁盘 hash vs SRCP 记录 hash），read 与 write 双重校验。
+- adopt 限定 owner 权限，防止 writer 借"采纳"绕过资源的冲突策略；采纳作为新 generation 记录来源与操作者，审计不隐藏分叉事实。
 
 ## 基准结果
 

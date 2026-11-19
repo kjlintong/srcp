@@ -21,6 +21,7 @@ from typing import Any, Callable
 from .backends.sqlite import SQLiteBackend
 from .capabilities import CapabilityService
 from .coordinator import Coordinator
+from .file_authority import FileAuthority
 
 S = {"type": "string"}
 I = {"type": "integer"}
@@ -67,8 +68,18 @@ TOOL_DEFS: list[dict[str, Any]] = [
          "content_type": S,
      }, ["resource_id", "principal", "op"])},
     {"name": "file_read",
-     "description": "Read a shared resource with its version and a stale-risk warning if others hold write leases.",
+     "description": "Read a shared resource with its version. If bound to a disk file, the real file is authoritative and its hash is verified; an out-of-band edit returns AUTHORITY_CONFLICT.",
      "inputSchema": _obj({"resource_id": S, "principal": S}, ["resource_id", "principal"])},
+    {"name": "file_bind",
+     "description": "Bind a resource to a real file under the workspace root (set --root). The file's current bytes seed the resource; subsequent edits stay in sync with disk.",
+     "inputSchema": _obj({
+         "resource_id": S, "path": S, "principal": S, "content_type": S,
+     }, ["resource_id", "path", "principal"])},
+    {"name": "file_adopt",
+     "description": "Owner-only: sanction an out-of-band disk change into the protocol as a new generation, so an AUTHORITY_CONFLICT can be resolved and writes resume.",
+     "inputSchema": _obj({
+         "resource_id": S, "principal": S, "note": S,
+     }, ["resource_id", "principal"])},
 ]
 
 
@@ -83,6 +94,8 @@ class CapabilityMCPServer:
             "plan_status": self._plan_status,
             "file_edit": self._file_edit,
             "file_read": self._file_read,
+            "file_bind": self._file_bind,
+            "file_adopt": self._file_adopt,
         }
 
     def _memory_commit(self, a: dict[str, Any]) -> Any:
@@ -118,6 +131,17 @@ class CapabilityMCPServer:
 
     def _file_read(self, a: dict[str, Any]) -> Any:
         return self.service.file_read(a["resource_id"], a["principal"])
+
+    def _file_bind(self, a: dict[str, Any]) -> Any:
+        return self.service.file_bind(
+            a["resource_id"], a["path"], a["principal"],
+            content_type=a.get("content_type", "text/plain"),
+        )
+
+    def _file_adopt(self, a: dict[str, Any]) -> Any:
+        return self.service.file_adopt(
+            a["resource_id"], a["principal"], a.get("note", "")
+        )
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -195,8 +219,14 @@ def main() -> None:
     parser.add_argument(
         "--db", default=os.environ.get("SRCP_DB", os.path.expanduser("~/.srcp/state.sqlite3"))
     )
+    parser.add_argument(
+        "--root", default=os.environ.get("SRCP_ROOT"),
+        help="workspace root for disk-bound files; enables file_bind/file_adopt",
+    )
     args = parser.parse_args()
-    service = CapabilityService(Coordinator(SQLiteBackend(args.db)))
+    coordinator = Coordinator(SQLiteBackend(args.db))
+    authority = FileAuthority(coordinator, args.root) if args.root else None
+    service = CapabilityService(coordinator, file_authority=authority)
     CapabilityMCPServer(service).run()
 
 

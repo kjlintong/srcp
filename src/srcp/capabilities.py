@@ -64,9 +64,18 @@ def _parse(value: str | None) -> datetime:
 class CapabilityService:
     """High-level, agent-facing capabilities built on top of a Coordinator."""
 
-    def __init__(self, coordinator: Coordinator, *, default_scope: str = "default") -> None:
+    def __init__(
+        self,
+        coordinator: Coordinator,
+        *,
+        default_scope: str = "default",
+        file_authority: Any = None,
+    ) -> None:
         self.coordinator = coordinator
         self.default_scope = default_scope
+        # Optional disk authority. When present, bound resources read/write the
+        # real file (hash-verified) instead of SRCP's internal blob — no shadow copy.
+        self.file_authority = file_authority
 
     def _p(self, principal: str) -> str:
         return normalize_principal(principal, self.default_scope)
@@ -359,6 +368,50 @@ class CapabilityService:
             return json.dumps(obj, sort_keys=True, ensure_ascii=False), "merge"
         raise ValueError(f"unsupported op kind: {kind!r}")
 
+    def _file_edit_bound(
+        self, resource_id: str, who: str, op: dict[str, Any], max_retries: int
+    ) -> dict[str, Any]:
+        """file_edit variant for disk-authoritative resources."""
+        fa = self.file_authority
+        last: dict[str, Any] = {"ok": False, "status": "UNKNOWN"}
+        for attempt in range(max_retries):
+            view = fa.read(resource_id, who)
+            if view["status"] == "AUTHORITY_CONFLICT":
+                # Someone edited the real file outside the protocol. Surface it;
+                # an owner must adopt() before writes can resume.
+                return {"ok": False, "status": "AUTHORITY_CONFLICT",
+                        "resource_id": resource_id,
+                        "disk_content": view.get("disk_content"),
+                        "note": view.get("note")}
+            try:
+                new_content, _hint = self._apply(op, view["content"])
+            except ValueError as exc:
+                return {"ok": False, "status": "BAD_OP", "error": str(exc)}
+            result = fa.write(
+                resource_id, who, new_content, view["generation"],
+                expected_content_hash=view.get("content_hash"),
+                intent=f"file.edit:{op.get('kind')}",
+            )
+            if result["ok"]:
+                return {
+                    "ok": True,
+                    "status": "COMMITTED",
+                    "resource_id": resource_id,
+                    "generation": result["generation"],
+                    "content_hash": result["content_hash"],
+                    "attempts": attempt + 1,
+                    "authority": "disk",
+                    "trace_id": result.get("trace_id"),
+                }
+            last = {"ok": False, "status": result["status"],
+                    "error": result.get("error"), "attempts": attempt + 1}
+            if result["status"] == "AUTHORITY_CONFLICT":
+                return last
+            if result["status"] == "CONFLICT" and op.get("kind") == "replace":
+                break
+            time.sleep(0.005)
+        return last
+
     def file_edit(
         self,
         resource_id: str,
@@ -376,6 +429,11 @@ class CapabilityService:
         the 'capability' that makes following the protocol the easy path.
         """
         who = self._p(principal)
+        # Disk-bound resources: read the authoritative file and verify its hash on
+        # every step. An out-of-band edit surfaces as AUTHORITY_CONFLICT and is never
+        # silently overwritten — an owner must adopt it first.
+        if self.file_authority is not None and self.file_authority.is_bound(resource_id):
+            return self._file_edit_bound(resource_id, who, op, max_retries)
         # Declared as 'abort' (plain CAS): the op itself computes the FULL new
         # content from the latest read, so there is no second merge at the server.
         # Conflicts are handled by this retry loop, which re-reads and re-applies.
@@ -430,6 +488,8 @@ class CapabilityService:
 
     def file_read(self, resource_id: str, principal: str) -> dict[str, Any]:
         who = self._p(principal)
+        if self.file_authority is not None and self.file_authority.is_bound(resource_id):
+            return self.file_authority.read(resource_id, who)
         view = self.coordinator.read(resource_id, who)
         return {
             "ok": True,
@@ -439,4 +499,31 @@ class CapabilityService:
             "content_type": view.content_type,
             "version_vector": view.version_vector,
             "stale_risk": view.stale_risk,
+            "authority": "srcp",
         }
+
+    # --------------------------------------------------------- disk authority ops
+
+    def file_bind(
+        self,
+        resource_id: str,
+        rel_path: str,
+        principal: str,
+        *,
+        content_type: str = "text/plain",
+        conflict_policy: str = "abort",
+    ) -> dict[str, Any]:
+        """Bind a resource to a real file under the workspace root."""
+        if self.file_authority is None:
+            return {"ok": False, "status": "NO_FILE_AUTHORITY",
+                    "note": "server started without --root"}
+        return self.file_authority.bind(
+            resource_id, rel_path, self._p(principal),
+            content_type=content_type, conflict_policy=conflict_policy,
+        )
+
+    def file_adopt(self, resource_id: str, principal: str, note: str = "") -> dict[str, Any]:
+        """Adopt an out-of-band disk change as a new protocol generation."""
+        if self.file_authority is None:
+            return {"ok": False, "status": "NO_FILE_AUTHORITY"}
+        return self.file_authority.adopt(resource_id, self._p(principal), note=note)
