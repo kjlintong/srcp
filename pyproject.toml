@@ -9,10 +9,27 @@ description = "Shared Resource Coordination Protocol - reference implementation"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
+authors = [{ name = "SRCP contributors" }]
+keywords = ["multi-agent", "concurrency", "mcp", "a2a", "fencing-token", "conflict-resolution", "audit"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = ["jsonschema>=4.10"]
 
+[project.urls]
+Homepage = "https://github.com/kjlintong/srcp"
+Repository = "https://github.com/kjlintong/srcp"
+Issues = "https://github.com/kjlintong/srcp/issues"
+Changelog = "https://github.com/kjlintong/srcp/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "build>=1"]
 
 [project.scripts]
 srcp = "srcp.cli:main"

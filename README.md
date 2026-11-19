@@ -51,7 +51,7 @@ L5 全部复用 L2 的 Coordinator，**不重造任何锁或版本逻辑**：mem
 cd ~/project/srcp
 export PYTHONPATH=$PWD/src
 
-# 全部一致性测试（72 项 × 3 后端 + 协议级测试）
+# 全部一致性测试（122 项：协议 72 + 能力层 24 + 磁盘权威 26）
 python3 -m unittest discover -s tests -t . -v
 
 # 命令行
@@ -69,23 +69,25 @@ python3 -m srcp.service_server --db /tmp/srcp.sqlite3
 python3 -m srcp.service_server --db /tmp/srcp.sqlite3 --root /path/to/workspace
 ```
 
-MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）：
+MCP 客户端配置示例（Claude Code / Codex 等支持 stdio MCP 的 CLI）——推荐能力层 server，`SRCP_ROOT` 只有它支持：
 
 ```json
 {
   "mcpServers": {
     "srcp": {
       "command": "python3",
-      "args": ["-m", "srcp.mcp_server"],
+      "args": ["-m", "srcp.service_server"],
       "env": {
         "PYTHONPATH": "/home/ryan/project/srcp/src",
-        "SRCP_DB": "/home/ryan/project/srcp/results/state.sqlite3",
+        "SRCP_DB": "/home/ryan/project/srcp/results/team.sqlite3",
         "SRCP_ROOT": "/home/ryan/project/srcp"
       }
     }
   }
 }
 ```
+
+若只需要协议原语（10 个低层工具），把 `-m` 后的模块换成 `srcp.mcp_server`；该 server 不读 `SRCP_ROOT`。安装为包（`pip install -e .`）后可去掉 `PYTHONPATH`。
 
 ## 协议要点
 

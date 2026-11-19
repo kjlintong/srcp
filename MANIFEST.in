@@ -1,0 +1,5 @@
+include README.md CHANGELOG.md LICENSE AGENTS.md
+recursive-include spec *.md *.json
+recursive-include tests *.py
+recursive-include examples *.py
+recursive-include results *.md *.json
